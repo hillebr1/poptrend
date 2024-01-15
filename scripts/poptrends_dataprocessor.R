@@ -14,8 +14,7 @@ list_of_packages_used <-
     "tidyverse", # data manipulation
     "vegan", # Analysis species data
     "lubridate", # Time-date manipulations
-    "broom", # tidy output models
-    "MASS"
+    "broom" # tidy output models
   )
 
 new_packages                 <- list_of_packages_used[!(list_of_packages_used %in% installed.packages()[,"Package"])]
