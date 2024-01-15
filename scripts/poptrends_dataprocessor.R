@@ -1,0 +1,785 @@
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+#                                     poptrends_dataprocessor ----                                   
+#                                     15/01/2024 
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# This code is an adaptation from the original poptrends.R 
+# Logistic regressions were added to the code (poisson and binomial) following the discussions during the workshop on Thursday 11-01-2024 
+
+# Load and install packages ----
+
+## Code to ensure that the used packages are installed 
+list_of_packages_used <- 
+  c(
+    "tidyverse", # data manipulation
+    "vegan", # Analysis species data
+    "lubridate", # Time-date manipulations
+    "broom", # tidy output models
+    "MASS"
+  )
+
+new_packages                 <- list_of_packages_used[!(list_of_packages_used %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+## Load libraries ----
+lapply(list_of_packages_used, library, character.only = TRUE)
+
+# Keep environment clean
+rm(list_of_packages_used, new_packages)
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Read in data and prepare for analysis ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# As an example we continue to use the phytoplankton dataset that's included in this github project. Replace with your own data following the same format:
+# StationID, year, species, abu
+# Where abu are the annual means per species per StationID
+
+# Change input file here. If neccessary perform similar clean up steps
+data <- read_delim("data/PPKTcount_noHT_28092022.csv", 
+                   delim = ";", escape_double = FALSE, trim_ws = TRUE)
+names(data)
+
+# STEP 1: If your variable names do not conform to our standard (StationID, year, species, abu), rename and delete empty rows 
+data<-data %>% dplyr::rename(species = Species, abu = biovolume_l) 
+# in our case StationID is okay, year needs to be calculated
+data<-data[!is.na(data$abu),]
+data<-data[!is.na(data$sampledate),]
+
+# STEP 2: If sample date but not year is given, extract the year. Library lubridate allows to first change the dates to numeric values and then extract the year
+data$date.numeric<-lubridate::dmy(data$sampledate) 
+# dmy is command if data are in format dd.mm.yyyy, ymd is for yyyy.mm.dd
+data$year <- lubridate::year(data$date.numeric) 
+# extracts the year
+
+# STEP 3: If your data can contain the same species more than once per sample (because different size classes or lifestages were distinguished) sum them
+data<-data  %>%
+  dplyr::group_by(StationID, sampledate, year, species) %>%  
+  dplyr::summarise(abu= sum(abu, na.rm = T))
+# obviously sampledate and STEP 4 can be ignored if only annual data exist
+
+# STEP 4: Create annual means and the number of annual samples 
+data<-data  %>%
+  dplyr::group_by(StationID, year, species) %>% 
+  dplyr::summarise(abu= mean(abu, na.rm = T),
+            N.sample=length(abu))
+
+# STEP 5: Further reductions
+# if you need to exclude some StationID because they are not part of the WaddenSea or for other reasons
+data<-data %>%
+  dplyr::filter(StationID %in% c("BOOMKDP", "DANTZGT", "DOOVBWT","GROOTGND","BOCHTVWTM",
+                          "HUIBGOT", "MARSDND", "ROTTMPT3", "TERSLG10",
+                          "Nney_W_2", "Bork_W_1", "WeMu_W_1", "JaBu_W_1"))
+
+# In other data sets it might be needed to exclude certain species or years.
+
+# Our example is already in long format, if your data is in wide format consider the "melt" command as in mentioned here, remove inital # to run
+#data <- melt(data, 
+#                 id.vars=c("StationID", "year"), # all the variables to keep but not split apart
+#                 measure.vars=c(x:y), # number of the variables containing species, that shall be melted into one
+#                 variable.name="species", # name for new variable that contains the names of the melded variables
+#                 value.name="abu") # name of the new variables with the values
+
+
+length.spec <-data %>% 
+  group_by(StationID, species) %>% 
+  summarise(N.spec=length(unique(year)))
+
+length.stat <-data %>% 
+  group_by(StationID) %>% 
+  summarise(N.stat=length(unique(year)))
+length<-merge(length.spec,length.stat,by="StationID")
+length$threshold<-length$N.spec/length$N.stat
+data<-merge(data,length,by=c("StationID","species"))
+
+data<-data[data$N.spec>4,]
+data<-data[data$threshold>.75,]
+
+# Start analysis script from here ----
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Create final dataframe for running through the analysis ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Finalize the data in one format that can run through the entire script without having to change transformations everywhere
+# Make sure the abundance data are integers (for poisson models_) and the year is continuous
+# Also make a transformed version of abu for a linear regression. Change transformation in this step if desired, or remove transformation to perform linear regression on original data
+# create a binary version of the abundance to run a logistic binomial regression for probability of occurrence
+data <-
+  data |>
+  dplyr::mutate(abu.tr = log(abu),
+                abu.bin = dplyr::case_when(abu == 0 ~ 0, TRUE ~ 1),
+                abu = round(abu),
+                year = as.numeric(year)) 
+
+# Extract some standard information (year range for stations per species)
+results.year <- 
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::summarize(
+    min.year=min(year),
+    max.year=max(year))
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run regressions - Linear regression ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+## Test linear trends ----
+
+# get slope b of abu ~ year from linear regression
+# Use the transformed version of abu as created in the data loading step (abu.tr)
+results.abu <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::tidy(
+      lm(abu.tr~year, data = .)
+    )) |>
+  dplyr::filter(term == "year") |> 
+  dplyr::rename(b.linear = estimate,
+                SE.b.linear = std.error,
+                pval.lin = p.value) |>
+  dplyr::select("StationID","species","b.linear","SE.b.linear",
+                "pval.lin")
+
+# Get the model statistics using the glance functions
+glance.abu <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::glance(
+      lm(abu.tr~year, data = .))) |> 
+  rename(AIC.linear = AIC,
+         nobs.linear = nobs,
+         r2.lin = adj.r.squared) |>
+  dplyr::select("StationID","species","AIC.linear","nobs.linear","r2.lin")
+
+
+# combine results together in one dataframe
+results.abu <-
+  results.year |>
+  # Combine the linear model output
+  dplyr::left_join(results.abu,
+                   by = c("StationID","species")) |>
+  # and with the model statistics
+  dplyr::left_join(glance.abu,
+                   by = c("StationID", "species"))
+
+## Test non-linear trends (polynomials) ----
+
+# get slope b of abu ~ poly(year,2) from quadratic regression
+# Use the transformed version of abu as created in the data loading step (abu.tr)
+results.abu2.lin <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      lm(abu.tr~poly(year,2), data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)1") |>
+  dplyr::rename(b.poly = estimate,
+                SE.b.poly = std.error,
+                pval.b.poly = p.value) |>
+  dplyr::select("StationID","species","b.poly","SE.b.poly",
+                "pval.b.poly")
+
+# get slope c of abu ~ poly (year,2) from quadratic regression
+results.abu2.quad <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      lm(abu.tr~poly(year,2), data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)2") |> 
+  dplyr::rename(c.poly = estimate,
+                SE.c.poly = std.error,
+                pval.c.poly = p.value) |>
+  dplyr::select("StationID","species","c.poly","SE.c.poly",
+                "pval.c.poly")
+
+#  Get the model statistics
+glance.abu2 <-
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::glance(
+      lm(abu.tr~poly(year,2), data = .)
+    )) |>
+  dplyr::rename(AIC.poly = AIC,
+                nobs.poly = nobs,
+                r2.poly = adj.r.squared,
+                pval.poly = p.value) |>
+  dplyr::select("StationID","species","AIC.poly","nobs.poly","r2.poly","pval.poly")
+
+# Combine into one dataframe
+results.abu2 <-
+  # b slope
+  results.abu2.lin |>
+  # c slope
+  dplyr::left_join(results.abu2.quad,
+                   by = c("StationID", "species")) |>
+  # Model statistics
+  dplyr::left_join(glance.abu2,
+                   by=c("StationID","species"))
+
+# Merge linear and quadratic regression
+output <-
+  results.abu |>
+  dplyr::left_join(results.abu2,
+                   by=c("StationID","species"))
+
+## Create the votes ----
+
+output <-
+  output |>
+  dplyr::mutate(vote = NA) |>
+  dplyr::mutate(vote = dplyr::case_when(
+    # None of the regressions is significant
+    pval.lin >= 0.1 & pval.poly >= 0.1 ~ "no",
+    
+    # Only linear is significant
+    pval.lin < 0.1 & pval.poly >= 0.1 & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.poly >= 0.1 & b.linear > 0 ~ "positive linear",
+    
+    # Only quadratic is significant
+    pval.lin >= 0.1 & pval.poly < 0.1 & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin >= 0.1 & pval.poly < 0.1 & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin >= 0.1 & pval.poly < 0.1 & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin >= 0.1 & pval.poly < 0.1 & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # both are significant, requiring involving AIC, first if AIC is lower for the polynomial
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # same but when AIC is lower for linear regression
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear < AIC.poly & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.poly < 0.1 & AIC.linear < AIC.poly & b.linear > 0 ~ "positive linear",
+    pval.lin < 0.1 & is.na(pval.poly) & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & is.na(pval.poly) & b.linear > 0 ~ "positive linear",
+    
+    # sometimes, the polynomial or even the linear do not produce results, such that the p-value is NA, make these neutral trends as well
+    is.na(vote) & pval.lin >= 0.1 & is.na(pval.poly) ~ "no",
+    is.na(vote) & is.na(pval.lin) ~ "no"
+  )) 
+
+## MOStest ----
+
+## Apply the MOS test on the votes that pass criteria i and ii  
+# create unique case identifier for data and for output
+data <-
+  data |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+output <-
+  output |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+UCI <- unique(output$UCI[output$vote=="negative to positive"|
+                           output$vote=="positive to negative"])
+
+# as there might be cases when there is no such case, i do the loop as in ifelse clause
+if(length(UCI)>0){
+  # If cases with species fullfilling criterea i or ii:
+  # Create an empty dataframe for output
+  MOS.abu<-data.frame()
+  for(i in 1:length(UCI)){
+    # For each of the cases
+    # Create temporary dataframe and extract the data from the data df into it
+    temp <- data[data$UCI==UCI[i], ]
+    if(dim(temp)[1]>2){
+      # Needs more than 2 observations
+      # Perform MOStest
+      MOS <- vegan::MOStest(temp$year,temp$abu.tr, family = "gaussian")
+      MOSout <- MOS$isBracketed
+      # Combine output back into MOS.abu
+      MOS.abu<- rbind(MOS.abu,data.frame(UCI=temp$UCI[1],MOSout))
+      rm(temp)
+    }
+  }
+} else{
+  # Otherwise create NA
+  MOS.abu<-data.frame(matrix("", ncol = 1, nrow = dim(output)[1]))
+  MOS.abu$UCI<-output$UCI
+  MOS.abu$MOSout<-NA}
+
+# Inspect created dataframe
+head(MOS.abu)
+
+# Combine with original output and change votes if MOS test was FALSE
+output <-
+  output |>
+  dplyr::full_join(MOS.abu |>
+                     dplyr::select(UCI,MOSout),
+                   by = "UCI") |>
+  # change votes if MOS Test was FALSE
+  dplyr::mutate(vote = dplyr::case_when(
+    vote == "positive to negative" & MOSout == "FALSE" ~ "positive decelerating",
+    vote == "negative to positive" & MOSout == "FALSE" ~ "negative decelerating",
+    TRUE ~ vote
+  ))
+
+summary(as.factor(output$vote))
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run regressions - Poisson regression ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Note that generalized linear models do not output adjusted R2's. it is possible to calculate pseudo R2 but there different methods to do this.
+# Do we want these measures??
+# Glance function also does not output p-value as a model statistic to be used in the distribution of the votes. Instead here chosen to use the p-value of poly(year,2) instead to compare to the linear trend
+
+## Test linear trends ----
+
+# get slope b of abu ~ year from poisson regression
+# Use the the rounded version of abu
+results.abu.pois <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu~year, family = "poisson", data = .)
+    )) |>
+  dplyr::filter(term == "year") |> 
+  dplyr::rename(b.linear = estimate,
+                SE.b.linear = std.error,
+                pval.lin = p.value) |>
+  dplyr::select("StationID","species","b.linear","SE.b.linear",
+                "pval.lin")
+
+# Get the model statistics using the glance function
+glance.abu.pois <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::glance(
+      glm(abu~year, family = "poisson", data = .))) |> 
+  rename(AIC.linear = AIC,
+         nobs.linear = nobs) |>
+  dplyr::select("StationID","species","AIC.linear","nobs.linear")
+
+# combine results together in one dataframe
+results.abu.pois <-
+  results.year |>
+  # Combine the linear model output
+  dplyr::left_join(results.abu.pois,
+                   by = c("StationID","species")) |>
+  # and with the model statistics
+  dplyr::left_join(glance.abu.pois,
+                   by = c("StationID", "species"))
+
+## Test non-linear trends (polynomials) ----
+
+# get slope b of abu ~ poly(year,2) from quadratic regression
+# Use the the rounded version of abu
+results.abu2.lin.pois <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu~poly(year,2), family = "poisson", data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)1") |>
+  dplyr::rename(b.poly = estimate,
+                SE.b.poly = std.error,
+                pval.b.poly = p.value) |>
+  dplyr::select("StationID","species","b.poly","SE.b.poly",
+                "pval.b.poly")
+
+# get slope c of abu ~ poly (year,2) from quadratic regression
+results.abu2.quad.pois <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu~poly(year,2), family = "poisson", data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)2") |> 
+  dplyr::rename(c.poly = estimate,
+                SE.c.poly = std.error,
+                pval.c.poly = p.value) |>
+  dplyr::select("StationID","species","c.poly","SE.c.poly",
+                "pval.c.poly")
+
+#  Get the model statistics
+glance.abu2.pois <-
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::glance(
+      glm(abu~poly(year,2), family = "poisson", data = .)
+    )) |>
+  dplyr::rename(AIC.poly = AIC,
+                nobs.poly = nobs) |>
+  dplyr::select("StationID","species","AIC.poly","nobs.poly")
+
+# Combine into one dataframe
+results.abu2.pois <-
+  # b slope
+  results.abu2.lin.pois |>
+  # c slope
+  dplyr::left_join(results.abu2.quad.pois,
+                   by = c("StationID", "species")) |>
+  # Model statistics
+  dplyr::left_join(glance.abu2.pois,
+                   by=c("StationID","species"))
+
+# Merge linear and quadratic regression
+output.pois <-
+  results.abu.pois |>
+  dplyr::left_join(results.abu2.pois,
+                   by=c("StationID","species"))
+
+## Create the votes ----
+
+output.pois <-
+  output.pois |>
+  dplyr::mutate(vote = NA) |>
+  dplyr::mutate(vote = dplyr::case_when(
+    # None of the regressions is significant
+    pval.lin >= 0.1 & pval.c.poly >= 0.1 ~ "no",
+    
+    # Only linear is significant
+    pval.lin < 0.1 & pval.c.poly >= 0.1 & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.c.poly >= 0.1 & b.linear > 0 ~ "positive linear",
+    
+    # Only quadratic is significant
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # both are significant, requiring involving AIC, first if AIC is lower for the polynomial
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # same but when AIC is lower for linear regression
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear < AIC.poly & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear < AIC.poly & b.linear > 0 ~ "positive linear",
+    pval.lin < 0.1 & is.na(pval.c.poly) & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & is.na(pval.c.poly) & b.linear > 0 ~ "positive linear",
+    
+    # sometimes, the polynomial or even the linear do not produce results, such that the p-value is NA, make these neutral trends as well
+    is.na(vote) & pval.lin >= 0.1 & is.na(pval.c.poly) ~ "no",
+    is.na(vote) & is.na(pval.lin) ~ "no"
+  )) 
+
+## MOStest ----
+
+## Apply the MOS test on the votes that pass criteria i and ii  
+# create unique case identifier for data and for output
+data <-
+  data |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+output.pois <-
+  output.pois |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+UCI <- unique(output.pois$UCI[output.pois$vote=="negative to positive"|
+                                output.pois$vote=="positive to negative"])
+
+# as there might be cases when there is no such case, i do the loop as in ifelse clause
+if(length(UCI)>0){
+  # If cases with species fullfilling criterea i or ii:
+  # Create an empty dataframe for output
+  MOS.abu.pois<-data.frame()
+  for(i in 1:length(UCI)){
+    # For each of the cases
+    # Create temporary dataframe and extract the data from the data df into it
+    temp <- data[data$UCI==UCI[i], ]
+    if(dim(temp)[1]>2){
+      # Needs more than 2 observations
+      # Perform MOStest
+      MOS <- vegan::MOStest(temp$year,temp$abu, family = "poisson")
+      MOSout <- MOS$isBracketed
+      # Combine output back into MOS.abu.pois
+      MOS.abu.pois<- rbind(MOS.abu.pois,data.frame(UCI=temp$UCI[1],MOSout))
+      rm(temp)
+    }
+  }
+} else{
+  # Otherwise create NA
+  MOS.abu.pois<-data.frame(matrix("", ncol = 1, nrow = dim(output.pois)[1]))
+  MOS.abu.pois$UCI<-output$UCI
+  MOS.abu.pois$MOSout<-NA}
+
+# Inspect created dataframe
+head(MOS.abu.pois)
+
+# Combine with original output and change votes if MOS test was FALSE
+output.pois <-
+  output.pois |>
+  dplyr::full_join(MOS.abu.pois |>
+                     dplyr::select(UCI,MOSout),
+                   by = "UCI") |>
+  # change votes if MOS Test was FALSE
+  dplyr::mutate(vote = dplyr::case_when(
+    vote == "positive to negative" & MOSout == "FALSE" ~ "positive decelerating",
+    vote == "negative to positive" & MOSout == "FALSE" ~ "negative decelerating",
+    TRUE ~ vote
+  ))
+
+summary(as.factor(output.pois$vote))
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Run regressions - Binomial regression ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# Note that generalized linear models do not output adjusted R2's. it is possible to calculate pseudo R2 but there different methods to do this.
+# Do we want these measures??
+# Glance function also does not output p-value as a model statistic to be used in the distribution of the votes. Instead here chosen to use the p-value of poly(year,2) instead to compare to the linear trend
+
+## Test linear trends ----
+
+# get slope b of abu ~ year from binomial regression
+# Use the the binary version of abu
+results.abu.bin <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu.bin~year, family = "binomial", data = .)
+    )) |>
+  dplyr::filter(term == "year") |> 
+  dplyr::rename(b.linear = estimate,
+                SE.b.linear = std.error,
+                pval.lin = p.value) |>
+  dplyr::select("StationID","species","b.linear","SE.b.linear",
+                "pval.lin")
+
+# Get the model statistics using the glance function
+glance.abu.bin <-
+  data |>
+  dplyr::group_by(StationID, species) |>
+  dplyr::do(
+    broom::glance(
+      glm(abu.bin~year, family = "binomial", data = .))) |> 
+  rename(AIC.linear = AIC,
+         nobs.linear = nobs) |>
+  dplyr::select("StationID","species","AIC.linear","nobs.linear")
+
+# combine results together in one dataframe
+results.abu.bin <-
+  results.year |>
+  # Combine the linear model output
+  dplyr::left_join(results.abu.bin,
+                   by = c("StationID","species")) |>
+  # and with the model statistics
+  dplyr::left_join(glance.abu.bin,
+                   by = c("StationID", "species"))
+
+## Test non-linear trends (polynomials) ----
+
+# get slope b of abu ~ poly(year,2) from quadratic regression
+# Use the transformed binary version of abu (abu.bin)
+results.abu2.lin.bin <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu.bin~poly(year,2), family = "binomial", data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)1") |>
+  dplyr::rename(b.poly = estimate,
+                SE.b.poly = std.error,
+                pval.b.poly = p.value) |>
+  dplyr::select("StationID","species","b.poly","SE.b.poly",
+                "pval.b.poly")
+
+# get slope c of abu ~ poly (year,2) from quadratic regression
+results.abu2.quad.bin <- 
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::tidy(
+      glm(abu.bin~poly(year,2), family = "binomial", data = .)
+    )) |>
+  dplyr::filter(term == "poly(year, 2)2") |> 
+  dplyr::rename(c.poly = estimate,
+                SE.c.poly = std.error,
+                pval.c.poly = p.value) |>
+  dplyr::select("StationID","species","c.poly","SE.c.poly",
+                "pval.c.poly")
+
+#  Get the model statistics
+glance.abu2.bin <-
+  data |>
+  dplyr::group_by(StationID,species) |>
+  dplyr::do(
+    broom::glance(
+      glm(abu.bin~poly(year,2), family = "binomial", data = .)
+    )) |>
+  dplyr::rename(AIC.poly = AIC,
+                nobs.poly = nobs) |>
+  dplyr::select("StationID","species","AIC.poly","nobs.poly")
+
+# Combine into one dataframe
+results.abu2.bin <-
+  # b slope
+  results.abu2.lin.bin |>
+  # c slope
+  dplyr::left_join(results.abu2.quad.bin,
+                   by = c("StationID", "species")) |>
+  # Model statistics
+  dplyr::left_join(glance.abu2.bin,
+                   by=c("StationID","species"))
+
+# Merge linear and quadratic regression
+output.bin <-
+  results.abu.bin |>
+  dplyr::left_join(results.abu2.bin,
+                   by=c("StationID","species"))
+
+## Create the votes ----
+
+output.bin <-
+  output.bin |>
+  dplyr::mutate(vote = NA) |>
+  dplyr::mutate(vote = dplyr::case_when(
+    # None of the regressions is significant
+    pval.lin >= 0.1 & pval.c.poly >= 0.1 ~ "no",
+    
+    # Only linear is significant
+    pval.lin < 0.1 & pval.c.poly >= 0.1 & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.c.poly >= 0.1 & b.linear > 0 ~ "positive linear",
+    
+    # Only quadratic is significant
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin >= 0.1 & pval.c.poly < 0.1 & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # both are significant, requiring involving AIC, first if AIC is lower for the polynomial
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly < 0 ~ "negative accelerating",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly > 0 ~ "positive accelerating",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly < 0 & c.poly > 0 ~ "negative to positive",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear > AIC.poly & b.poly > 0 & c.poly < 0 ~ "positive to negative",
+    
+    # same but when AIC is lower for linear regression
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear < AIC.poly & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & pval.c.poly < 0.1 & AIC.linear < AIC.poly & b.linear > 0 ~ "positive linear",
+    pval.lin < 0.1 & is.na(pval.c.poly) & b.linear < 0 ~ "negative linear",
+    pval.lin < 0.1 & is.na(pval.c.poly) & b.linear > 0 ~ "positive linear",
+    
+    # sometimes, the polynomial or even the linear do not produce results, such that the p-value is NA, make these neutral trends as well
+    is.na(vote) & pval.lin >= 0.1 & is.na(pval.c.poly) ~ "no",
+    is.na(vote) & is.na(pval.lin) ~ "no"
+  )) 
+
+## MOStest ----
+
+## Apply the MOS test on the votes that pass criteria i and ii  
+# create unique case identifier for data and for output
+data <-
+  data |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+output.bin <-
+  output.bin |>
+  dplyr::mutate(UCI = paste(StationID, species))
+
+UCI <- unique(output.bin$UCI[output.bin$vote=="negative to positive"|
+                               output.bin$vote=="positive to negative"])
+
+# as there might be cases when there is no such case, i do the loop as in ifelse clause
+if(length(UCI)>0){
+  # If cases with species fullfilling criterea i or ii:
+  # Create an empty dataframe for output
+  MOS.abu.bin<-data.frame()
+  for(i in 1:length(UCI)){
+    # For each of the cases
+    # Create temporary dataframe and extract the data from the data df into it
+    temp <- data[data$UCI==UCI[i], ]
+    if(dim(temp)[1]>2){
+      # Needs more than 2 observations
+      # Perform MOStest
+      MOS <- vegan::MOStest(temp$year,temp$abu.bin, family = "binomial")
+      MOSout <- MOS$isBracketed
+      # Combine output back into MOS.abu.bin
+      MOS.abu.bin<- rbind(MOS.abu.bin,data.frame(UCI=temp$UCI[1],MOSout))
+      rm(temp)
+    }
+  }
+} else{
+  # Otherwise create NA
+  MOS.abu.bin<-data.frame(matrix("", ncol = 1, nrow = dim(output.bin)[1]))
+  MOS.abu.bin$UCI<-output$UCI
+  MOS.abu.bin$MOSout<-NA}
+
+# Inspect created dataframe
+head(MOS.abu.bin)
+
+# Combine with original output and change votes if MOS test was FALSE
+output.bin <-
+  output.bin |>
+  dplyr::full_join(MOS.abu.bin |>
+                     dplyr::select(UCI,MOSout),
+                   by = "UCI") |>
+  # change votes if MOS Test was FALSE
+  dplyr::mutate(vote = dplyr::case_when(
+    vote == "positive to negative" & MOSout == "FALSE" ~ "positive decelerating",
+    vote == "negative to positive" & MOSout == "FALSE" ~ "negative decelerating",
+    TRUE ~ vote
+  ))
+
+summary(as.factor(output.bin$vote)) 
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Output for meta analysis ----
+# :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# For now assuming the output of the linear models with the transformation
+# Rename the output (otherwise we overwrite each other)
+
+phyto1 <- 
+  output |>
+  # the data set needs a unique identifier (see above, will use this as random term)
+  # suggest do use initials XXX and numbers that you can then allocate yourself
+  dplyr::mutate(UDI = "HLH001",
+                # Information on the organism group
+                organism.group = "phytoplankton", # entries can be: mammals, birds, macroinvertebrates, fish, zooplankton, phytoplankton, macrophytes, bacteria
+                #Information whether species-biomass or -abundance were used
+                measure = "biomass"
+                ) 
+
+
+
+# Information on the phylogeny
+# In the exemplary case this can be taken from the original data
+phylo <- read_delim("data/PPKTcount_noHT_28092022.csv", 
+                    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+phylo <- 
+  phylo |> 
+  dplyr::rename(species = Species) |>
+  dplyr::select(Phylum, Class, Order, Family, Genus, species) |>
+  dplyr::distinct()
+
+phyto1 <- dplyr::full_join(phyto1,phylo,by="species")
+
+# If the phylogeny is not available, you need to add all five variables via mydata$Phylum<-NA, same for Class, Order, Family, Genus. Instead of NA, you can if you have also add text, e.g. mydata$Phylum = "Mollusca"
+
+# Finally, a few variables for the data origin
+# where did the data come from
+phyto1$origin<-"Rijkswaterstaat NL"
+phyto1$origin[phyto1$StationID=="Nney_W_2"]<-"NLWKN"
+phyto1$origin[phyto1$StationID=="JaBu_W_1"]<-"NLWKN"
+phyto1$origin[phyto1$StationID=="Bork_W_1"]<-"NLWKN"
+phyto1$origin[phyto1$StationID=="WeMu_W_1"]<-"NLWKN"
+# who entered them into our synthesis
+phyto1$enter<-"Helmut Hillebrand"
+#is there a DOI where we can read more on this data
+phyto1$DOI<-"10.1007/s12526-023-01382-9"
+
+#We can discuss at a later point if we also want to map things, then we need to add lat and long for the StationID, currently I only add placeholders
+phyto1$lat<-NA
+phyto1$long<-NA
+
+# The final data set has the following names
+names(phyto1)
+# and needs to be saved like this
+write.csv(phyto1,file="output/phylo1.csv")
