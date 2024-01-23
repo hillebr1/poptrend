@@ -97,17 +97,6 @@ data<-merge(data,length,by=c("StationID","species"))
 data<-data[data$N.spec>4,]
 data<-data[data$threshold>.75,]
 
-# It might be necessary to add the 0's to the data, do this after the previous filtering step to prevent stations to be kept in when species only are observed there once or twice and trends being determined by single points
-# the binomial model needs 0 data in any case in order to run. We can decide to remove the 0's later on for the linear models
-data <-
-  data |> 
-    dplyr::select(StationID, year, species, abu) |>
-    tidyr::pivot_wider(id_cols = c(StationID, year), values_from = abu, names_from = species, values_fill = 0) |>
-    tidyr::pivot_longer(cols = !c(StationID, year), names_to = "species", values_to = "abu") |>
-    # Remove species that only contain 0 for certain stations
-    dplyr::group_by(StationID, species) |>
-    dplyr::filter(any(abu != 0)) |>
-    dplyr::ungroup()
 
 # Start analysis script from here ----
 
@@ -115,10 +104,40 @@ data <-
 # Create final dataframe for running through the analysis ----
 # :::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
+# Make sure to apply the filtering step to only include species and station combinations where a species has been observed for at least 5 years and a threshold number of years of at least 75%
+
+filter.threshold <- 
+  data |> 
+  dplyr::group_by(StationID, species) |>
+  # Remove 0's
+  dplyr::filter(abu != 0) |>
+  dplyr::summarise(N.spec = length(unique(year))) |>
+  dplyr::left_join(data |> 
+                     dplyr::group_by(StationID) |>
+                     dplyr::summarise(N.stat = length(unique(year))),
+                   by = "StationID") |>
+  dplyr::mutate(threshold = N.spec/N.stat) |>
+  dplyr::filter(N.spec >= 5 & threshold > 0.75) |>
+  dplyr::mutate(UCI = paste(StationID, species, sep = " "))
+
+# filter data and add 0's
+data <-
+  data |>
+  dplyr::mutate(UCI = paste(StationID, species, sep = " ")) |>
+  dplyr::filter(UCI %in% filter.threshold$UCI) |>
+  dplyr::select(StationID, year, species, abu) |>
+  tidyr::pivot_wider(id_cols = c(StationID, year), values_from = abu, names_from = species, values_fill = 0) |>
+  tidyr::pivot_longer(cols = !c(StationID, year), names_to = "species", values_to = "abu") |>
+  # Remove species that only contain 0 for certain stations
+  dplyr::group_by(StationID, species) |>
+  dplyr::filter(any(abu != 0)) |>
+  dplyr::ungroup()
+
 # Finalize the data in one format that can run through the entire script without having to change transformations everywhere
 # Make sure the abundance data are integers (for poisson models_) and the year is continuous
 # Also make a transformed version of abu for a linear regression. Change transformation in this step if desired, or remove transformation to perform linear regression on original data
 # create a binary version of the abundance to run a logistic binomial regression for probability of occurrence
+
 data <-
   data |>
   dplyr::mutate(abu.tr = log1p(abu),
@@ -1363,7 +1382,8 @@ phyto1 <-
                 # Information on the organism group
                 organism.group = "phytoplankton", # entries can be: mammals, birds, macroinvertebrates, fish, zooplankton, phytoplankton, macrophytes, bacteria
                 #Information whether species-biomass or -abundance were used
-                measure = "biomass"
+                measure = "biomass",
+                transformation = "log1p" # transformation applied to the data for the lm model
                 ) 
 
 
