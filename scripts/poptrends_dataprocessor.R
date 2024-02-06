@@ -1105,7 +1105,8 @@ all_output<-
       dplyr::rename_with(~paste0(., "_nb")) |>
       dplyr::rename(StationID = StationID_nb,
                     species = species_nb)
-  )
+  ) |>
+  dplyr::ungroup()
 
 # make a decision on which model output to use in each case
 
@@ -1398,7 +1399,7 @@ phylo <-
   dplyr::select(Phylum, Class, Order, Family, Genus, species) |>
   dplyr::distinct()
 
-phyto1 <- dplyr::full_join(phyto1,phylo,by="species")
+phyto1 <- dplyr::left_join(phyto1,phylo,by="species")
 
 # If the phylogeny is not available, you need to add all five variables via mydata$Phylum<-NA, same for Class, Order, Family, Genus. Instead of NA, you can if you have also add text, e.g. mydata$Phylum = "Mollusca"
 
