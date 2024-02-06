@@ -1398,7 +1398,7 @@ phylo <-
   dplyr::select(Phylum, Class, Order, Family, Genus, species) |>
   dplyr::distinct()
 
-phyto1 <- dplyr::full_join(phyto1,phylo,by="species")
+phyto1 <- dplyr::left_join(phyto1,phylo,by="species")
 
 # If the phylogeny is not available, you need to add all five variables via mydata$Phylum<-NA, same for Class, Order, Family, Genus. Instead of NA, you can if you have also add text, e.g. mydata$Phylum = "Mollusca"
 
