@@ -1105,7 +1105,8 @@ all_output<-
       dplyr::rename_with(~paste0(., "_nb")) |>
       dplyr::rename(StationID = StationID_nb,
                     species = species_nb)
-  )
+  ) |>
+  dplyr::ungroup()
 
 # make a decision on which model output to use in each case
 
