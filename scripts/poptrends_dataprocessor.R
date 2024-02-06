@@ -1161,37 +1161,37 @@ all_output <-
       best_linear == "lm" ~ b.linear,
       best_linear == "poisson" ~ b.linear_pois,
       best_linear == "negative binomial" ~ b.linear_nb,
-      best_linear == "No best model" ~ NA
+      best_linear == "No best model" ~ NA_real_
     ),
     SE.b.linear = dplyr::case_when(
       best_linear == "lm" ~ SE.b.linear,
       best_linear == "poisson" ~ SE.b.linear_pois,
       best_linear == "negative binomial" ~ SE.b.linear_nb,
-      best_linear == "No best model" ~ NA
+      best_linear == "No best model" ~ NA_real_
     ),
     pval.lin = dplyr::case_when(
       best_linear == "lm" ~ pval.lin,
       best_linear == "poisson" ~ pval.lin_pois,
       best_linear == "negative binomial" ~ pval.lin_nb,
-      best_linear == "No best model" ~ NA
+      best_linear == "No best model" ~ NA_real_
     ),
     AIC.linear = dplyr::case_when(
       best_linear == "lm" ~ AIC.linear,
       best_linear == "poisson" ~ AIC.linear_pois,
       best_linear == "negative binomial" ~ AIC.linear_nb,
-      best_linear == "No best model" ~ NA
+      best_linear == "No best model" ~ NA_real_
     ),
     nobs.linear = dplyr::case_when(
       best_linear == "lm" ~ nobs.linear,
       best_linear == "poisson" ~ nobs.linear_pois,
       best_linear == "negative binomial" ~ nobs.linear_nb,
-      best_linear == "No best model" ~ NA
+      best_linear == "No best model" ~ NA_real_
     ),
     r2.lin = dplyr::case_when(
       best_linear == "lm" ~ r2.lin,
-      best_linear == "poisson" ~ NA,
-      best_linear == "negative binomial" ~ NA,
-      best_linear == "No best model" ~ NA
+      best_linear == "poisson" ~ NA_real_,
+      best_linear == "negative binomial" ~ NA_real_,
+      best_linear == "No best model" ~ NA_real_
     )) |>
   # Polynomial
   dplyr::mutate(
@@ -1199,55 +1199,55 @@ all_output <-
       best_poly == "lm" ~ b.poly,
       best_poly == "poisson" ~ b.poly_pois,
       best_poly == "negative binomial" ~ b.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     SE.b.poly = dplyr::case_when(
       best_poly == "lm" ~ SE.b.poly,
       best_poly == "poisson" ~ SE.b.poly_pois,
       best_poly == "negative binomial" ~ SE.b.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     pval.b.poly = dplyr::case_when(
       best_poly == "lm" ~ pval.b.poly,
       best_poly == "poisson" ~ pval.b.poly_pois,
       best_poly == "negative binomial" ~ pval.b.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     c.poly = dplyr::case_when(
       best_poly == "lm" ~ c.poly,
       best_poly == "poisson" ~ c.poly_pois,
       best_poly == "negative binomial" ~ c.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     SE.c.poly = dplyr::case_when(
       best_poly == "lm" ~ SE.c.poly,
       best_poly == "poisson" ~ SE.c.poly_pois,
       best_poly == "negative binomial" ~ SE.c.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     pval.c.poly = dplyr::case_when(
       best_poly == "lm" ~ pval.c.poly,
       best_poly == "poisson" ~ pval.c.poly_pois,
       best_poly == "negative binomial" ~ pval.c.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     AIC.poly = dplyr::case_when(
       best_poly == "lm" ~ AIC.poly,
       best_poly == "poisson" ~ AIC.poly_pois,
       best_poly == "negative binomial" ~ AIC.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     nobs.poly = dplyr::case_when(
       best_poly == "lm" ~ nobs.poly,
       best_poly == "poisson" ~ nobs.poly_pois,
       best_poly == "negative binomial" ~ nobs.poly_nb,
-      best_poly == "No best model" ~ NA
+      best_poly == "No best model" ~ NA_real_
     ),
     r2.poly = dplyr::case_when(
       best_poly == "lm" ~ r2.poly,
-      best_poly == "poisson" ~ NA,
-      best_poly == "negative binomial" ~ NA,
-      best_poly == "No best model" ~ NA
+      best_poly == "poisson" ~ NA_real_,
+      best_poly == "negative binomial" ~ NA_real_,
+      best_poly == "No best model" ~ NA_real_
     )
   ) |>
   # clean up the dataframe
