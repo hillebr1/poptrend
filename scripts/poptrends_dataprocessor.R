@@ -95,7 +95,7 @@ length$threshold<-length$N.spec/length$N.stat
 data<-merge(data,length,by=c("StationID","species"))
 
 data<-data[data$N.spec>4,]
-data<-data[data$threshold>.75,]
+data<-data[data$threshold>.5,]
 
 
 # Start analysis script from here ----
@@ -1184,8 +1184,8 @@ all_output <-
     nobs.linear = dplyr::case_when(
       best_linear == "lm" ~ nobs.linear,
       best_linear == "poisson" ~ nobs.linear_pois,
-      best_linear == "negative binomial" ~ nobs.linear_nb,
-      best_linear == "No best model" ~ NA_real_
+      best_linear == "negative binomial" ~ nobs.linear_nb
+      # best_linear == "No best model" ~ NA_real_
     ),
     r2.lin = dplyr::case_when(
       best_linear == "lm" ~ r2.lin,
@@ -1240,8 +1240,8 @@ all_output <-
     nobs.poly = dplyr::case_when(
       best_poly == "lm" ~ nobs.poly,
       best_poly == "poisson" ~ nobs.poly_pois,
-      best_poly == "negative binomial" ~ nobs.poly_nb,
-      best_poly == "No best model" ~ NA_real_
+      best_poly == "negative binomial" ~ nobs.poly_nb
+      # best_poly == "No best model" ~ NA_real_
     ),
     r2.poly = dplyr::case_when(
       best_poly == "lm" ~ r2.poly,
