@@ -95,7 +95,7 @@ length$threshold<-length$N.spec/length$N.stat
 data<-merge(data,length,by=c("StationID","species"))
 
 data<-data[data$N.spec>4,]
-data<-data[data$threshold>.75,]
+data<-data[data$threshold>.5,]
 
 
 # Start analysis script from here ----
