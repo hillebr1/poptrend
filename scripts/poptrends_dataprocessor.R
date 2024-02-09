@@ -119,7 +119,7 @@ filter.threshold <-
                      dplyr::summarise(N.stat = length(unique(year))),
                    by = "StationID") |>
   dplyr::mutate(threshold = N.spec/N.stat) |>
-  dplyr::filter(N.spec >= 5 & threshold > 0.75) |>
+  dplyr::filter(N.spec >= 5 & threshold > 0.5) |>
   dplyr::mutate(UCI = paste(StationID, species, sep = " "))
 
 # filter data and add 0's
