@@ -83,9 +83,11 @@ data<-data |>
 #                 value.name="abu") # name of the new variables with the values
 
 
-length.spec <-data |> 
-  group_by(StationID, species) |> 
-  summarise(N.spec=length(unique(year)))
+
+length.spec = data %>% 
+  group_by(StationID, species) %>%
+  summarise(N.spec = sum(abu  != 0))
+
 
 length.stat <-data |> 
   group_by(StationID) |> 
@@ -1403,23 +1405,8 @@ phyto1 <- dplyr::left_join(phyto1,phylo,by="species")
 
 # If the phylogeny is not available, you need to add all five variables via mydata$Phylum<-NA, same for Class, Order, Family, Genus. Instead of NA, you can if you have also add text, e.g. mydata$Phylum = "Mollusca"
 
-# Finally, a few variables for the data origin
-# where did the data come from
-phyto1$origin<-"Rijkswaterstaat NL"
-phyto1$origin[phyto1$StationID=="Nney_W_2"]<-"NLWKN"
-phyto1$origin[phyto1$StationID=="JaBu_W_1"]<-"NLWKN"
-phyto1$origin[phyto1$StationID=="Bork_W_1"]<-"NLWKN"
-phyto1$origin[phyto1$StationID=="WeMu_W_1"]<-"NLWKN"
-# who entered them into our synthesis
-phyto1$enter<-"Helmut Hillebrand"
-#is there a DOI where we can read more on this data
-phyto1$DOI<-"10.1007/s12526-023-01382-9"
-
-#We can discuss at a later point if we also want to map things, then we need to add lat and long for the StationID, currently I only add placeholders
-phyto1$lat<-NA
-phyto1$long<-NA
 
 # The final data set has the following names
 names(phyto1)
 # and needs to be saved like this
-write.csv(phyto1,file="output/phylo1.csv")
+write.csv(phyto1,file="output/phyto1.csv")
